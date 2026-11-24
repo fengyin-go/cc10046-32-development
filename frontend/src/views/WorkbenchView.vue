@@ -15,6 +15,9 @@
       </div>
     </header>
 
+    <DispatchPanel v-if="meta.key === 'crawl_schedule'" />
+    <CredentialTrackerPanel v-else-if="meta.key === 'batch_tracker'" />
+
     <div class="stat-row">
       <article v-for="item in stats" :key="item.label" class="stat-card">
         <span class="stat-label">{{ item.label }}</span>
@@ -104,6 +107,8 @@ import {
   runAction as applyAction,
 } from '@/api/backend-service'
 import type { EntryRow } from '@/data/types'
+import DispatchPanel from '@/components/DispatchPanel.vue'
+import CredentialTrackerPanel from '@/components/CredentialTrackerPanel.vue'
 
 const props = defineProps<{ moduleKey: string }>()
 const meta = moduleMeta(props.moduleKey)

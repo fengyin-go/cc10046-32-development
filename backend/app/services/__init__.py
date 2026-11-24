@@ -51,3 +51,15 @@ SERVICES: dict[str, BaseModuleService] = {
 
 def service_for(module: str) -> BaseModuleService | None:
     return SERVICES.get(module)
+
+
+# 调度批次凭据 / 来源分片计划领取中心的常用导出（兼容 from app.services import ...）。
+from app.services.dispatch_claim import (  # noqa: E402,F401
+    ClaimService,
+    DispatchClaimService,
+    DispatchCredentialService,
+    DispatchResponseInterrupted,
+    ShardPlanService,
+    claim_center,
+    dispatch_claim_service,
+)

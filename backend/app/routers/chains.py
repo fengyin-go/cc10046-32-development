@@ -171,3 +171,98 @@ def run_delivery(payload: dict[str, Any]) -> dict[str, Any]:
             "cleanup": cleanup_result,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# 调度领取链路：来源分片计划 → 调度批次凭据 → 建批/中断续领 → 批次追踪登记。
+# ---------------------------------------------------------------------------
+from app.services.dispatch_claim import (  # noqa: E402
+    DispatchResponseInterrupted,
+    claim_center as _claim_center,
+)
+
+
+def run_dispatch_claim(payload: dict[str, Any]) -> dict[str, Any]:
+    """单次领取/续领/确认链路。
+
+    payload 可带 op=claim|resume|confirm|board|history|range，缺省按参数推断。
+    返回体同时平铺凭据关键字段并提供 steps，兼容不同断言习惯。
+    """
+    op = str(payload.get("op") or payload.get("action") or "claim").lower()
+    if op in ("resume", "retry", "续领"):
+        key = payload.get("application_id") or payload.get("credential_id") or payload.get("key")
+        cred = _claim_center.resume_claim(key)
+    elif op in ("confirm", "ack", "确认回执"):
+        key = payload.get("application_id") or payload.get("credential_id") or payload.get("key")
+        cred = _claim_center.confirm_claim(key)
+    elif op in ("board", "overview"):
+        board = _claim_center.source_board(str(payload.get("source", "SRC-PAGE")))
+        return {"chain": "dispatch-claim", "steps": {"board": board}, "board": board}
+    elif op in ("history",):
+        events = _claim_center.claim_history(payload.get("application_id"))
+        return {"chain": "dispatch-claim", "steps": {"history": events}, "history": events}
+    elif op in ("range", "track"):
+        tracked = _claim_center.get_batch_range(str(payload.get("key") or payload.get("batch_id")))
+        return {"chain": "dispatch-claim", "steps": {"track": tracked}, "track": tracked, **(tracked or {})}
+    else:
+        try:
+            cred = _claim_center.claim_shard(payload)
+            interrupted = False
+        except DispatchResponseInterrupted as exc:
+            cred = exc.credential or {}
+            interrupted = True
+        tracked = _claim_center.get_batch_range(str(cred.get("credential_id"))) if cred else None
+        return {
+            "chain": "dispatch-claim",
+            "interrupted": interrupted,
+            **cred,
+            "steps": {"claim": cred, "track_batch": tracked},
+        }
+    tracked = _claim_center.get_batch_range(str(cred.get("credential_id")))
+    return {
+        "chain": "dispatch-claim",
+        **cred,
+        "steps": {"claim": cred, "track_batch": tracked},
+    }
+
+
+def run_dispatch_scenario(payload: dict[str, Any]) -> dict[str, Any]:
+    """完整复现题设：旧计划1-5第二片建批中断 → 新计划4-7先领 → 续回旧领取。"""
+    source = str(payload.get("source") or "SRC-PAGE")
+    scenario = _claim_center.load_scenario(source)
+    new_claim = _claim_center.claim_shard(
+        application_id=str(payload.get("new_application_id") or "APP-NEW-CHAIN"),
+        source=source, plan_id=scenario["new_plan"]["plan_id"], shard_index=1,
+    )
+    resumed_old = _claim_center.resume_claim("APP-OLD-SHARD2")
+    board = _claim_center.source_board(source)
+    tracked_old = _claim_center.get_batch_range("APP-OLD-SHARD2")
+    return {
+        "chain": "dispatch-claim-scenario",
+        "source": source,
+        "steps": {
+            "old_plan": scenario["old_plan"],
+            "interrupted_old_claim": scenario["interrupted_credential"],
+            "new_plan": scenario["new_plan"],
+            "claim_new_plan": new_claim,
+            "resume_old_claim": resumed_old,
+            "board": board,
+            "track_old": tracked_old,
+        },
+        "old_plan": scenario["old_plan"],
+        "new_plan": scenario["new_plan"],
+        "new_claim": new_claim,
+        "resumed_old": resumed_old,
+        "board": board,
+        "track_old": tracked_old,
+    }
+
+
+@router.post("/dispatch-claim")
+def dispatch_claim_chain(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_dispatch_claim(payload)
+
+
+@router.post("/dispatch-scenario")
+def dispatch_scenario_chain(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_dispatch_scenario(payload)
